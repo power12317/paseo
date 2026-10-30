@@ -1,9 +1,31 @@
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { lstatSync } from "node:fs";
+import { readFile } from "node:fs/promises";
 import { getErrorMessage } from "@getpaseo/protocol/error-utils";
 import { z } from "zod";
 import { execCommand } from "../../../utils/spawn.js";
 
 export const PASEO_CLI_PACKAGE = "@getpaseo/cli";
+
+export async function resolveCliUpdateTarget(
+  start = path.dirname(fileURLToPath(import.meta.url)),
+): Promise<string> {
+  let directory = start;
+  while (true) {
+    const manifestPath = path.join(directory, "package.json");
+    const content = await readFile(manifestPath, "utf8").catch(() => null);
+    if (content !== null) {
+      const manifest = z
+        .object({ paseoFork: z.object({ updateUrl: z.string().url() }).optional() })
+        .parse(JSON.parse(content));
+      if (manifest.paseoFork) return manifest.paseoFork.updateUrl;
+    }
+    const parent = path.dirname(directory);
+    if (parent === directory) return `${PASEO_CLI_PACKAGE}@latest`;
+    directory = parent;
+  }
+}
 
 const NPM_PROBE_TIMEOUT_MS = 10_000;
 const NPM_INSTALL_TIMEOUT_MS = 300_000;
@@ -143,12 +165,16 @@ export class DefaultNpmGlobalPaseoCli implements NpmGlobalPaseoCli {
     return install;
   }
 
-  installLatest(options: NpmGlobalOptions = {}): Promise<CommandResult> {
+  async installLatest(options: NpmGlobalOptions = {}): Promise<CommandResult> {
     const prefixArgs = options.prefix ? ["--prefix", options.prefix] : [];
-    return this.runCommand("npm", ["install", "-g", `${PASEO_CLI_PACKAGE}@latest`, ...prefixArgs], {
-      timeout: NPM_INSTALL_TIMEOUT_MS,
-      maxBuffer: NPM_MAX_BUFFER_BYTES,
-    });
+    return this.runCommand(
+      "npm",
+      ["install", "-g", await resolveCliUpdateTarget(), ...prefixArgs],
+      {
+        timeout: NPM_INSTALL_TIMEOUT_MS,
+        maxBuffer: NPM_MAX_BUFFER_BYTES,
+      },
+    );
   }
 }
 

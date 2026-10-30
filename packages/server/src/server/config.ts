@@ -643,6 +643,7 @@ export function resolveConfigFromPersisted(
     serviceProxy: resolveServiceProxyConfig(env, persisted),
     webUi: resolveWebUiConfig(paseoHome, env, cli, persisted),
     auth: resolveAuthConfig(env, persisted),
+    userSpaces: persisted.daemon?.userSpaces,
     openai,
     speech,
     voiceLlmProvider: voiceLlm.provider,

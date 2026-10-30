@@ -49,3 +49,25 @@ describe("withRuntimePaseoMcpServer", () => {
     expect(result.mcpServers).toBeUndefined();
   });
 });
+
+test("replaces a password-space MCP endpoint instead of persisting stale runtime credentials", () => {
+  const result = withRuntimePaseoMcpServer({
+    config: {
+      ...BASE_CONFIG,
+      mcpServers: {
+        paseo: {
+          type: "http",
+          url: "http://127.0.0.1:6767/_paseo/alice/mcp/agents?callerAgentId=old",
+          headers: { Authorization: "Bearer old" },
+        },
+      },
+    },
+    agentId: "new",
+    mcpBaseUrl: "http://127.0.0.1:6767/_paseo/alice/mcp/agents",
+    mcpAuthToken: "fresh",
+  });
+  expect(result.mcpServers?.paseo).toMatchObject({
+    url: "http://127.0.0.1:6767/_paseo/alice/mcp/agents?callerAgentId=new",
+    headers: { Authorization: "Bearer fresh" },
+  });
+});

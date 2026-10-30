@@ -1859,3 +1859,126 @@ test("public project subscriptions request updates and release their producer de
     await daemon.close();
   }
 });
+
+test("password spaces keep projects, chats, search and reconnects separate on one port", async () => {
+  const { mkdtemp, rm } = await import("node:fs/promises");
+  const { tmpdir } = await import("node:os");
+  const { hashSync } = await import("bcryptjs");
+  const root = await mkdtemp(path.join(tmpdir(), "paseo-password-spaces-"));
+  const aRoot = path.join(root, "alice");
+  const bRoot = path.join(root, "bob");
+  await mkdir(path.join(aRoot, "web-shop"), { recursive: true });
+  await mkdir(path.join(bRoot, "api-server"), { recursive: true });
+  const daemon = await createTestPaseoDaemon({
+    paseoHomeRoot: root,
+    staticDir: root,
+    cleanup: false,
+    mcpEnabled: false,
+    pluginsEnabled: false,
+    userSpaces: [
+      { id: "alice", passwordHash: hashSync("alice-pass", 4), projectRoots: [aRoot] },
+      { id: "bob", passwordHash: hashSync("bob-pass", 4), projectRoots: [bRoot] },
+    ],
+  });
+  const makeClient = (password: string) =>
+    new DaemonClient({ url: `ws://127.0.0.1:${daemon.port}/ws`, password, appVersion: "0.14.0" });
+  const alice = makeClient("alice-pass");
+  const alicePhone = makeClient("alice-pass");
+  const bob = makeClient("bob-pass");
+  const wrong = makeClient("wrong-pass");
+  try {
+    await Promise.all([alice.connect(), bob.connect(), alicePhone.connect()]);
+    const aliceServerId = alice.getLastServerInfoMessage()?.serverId;
+    await expect(wrong.connect()).rejects.toThrow(/Incorrect password/);
+    expect(alice.getLastServerInfoMessage()?.serverId).toBe(
+      alicePhone.getLastServerInfoMessage()?.serverId,
+    );
+    expect(alice.getLastServerInfoMessage()?.serverId).not.toBe(
+      bob.getLastServerInfoMessage()?.serverId,
+    );
+    const search = await alice.getDirectorySuggestions({ query: "web" });
+    expect(search.directories).toContain(path.join(aRoot, "web-shop"));
+    const progressive = await bob.getDirectorySuggestions({ query: "." });
+    expect(progressive.directories).toContain(path.join(bRoot, "api-server"));
+    expect((await alice.addProject(path.join(aRoot, "web-shop"))).project).not.toBeNull();
+    expect((await bob.listProjects()).projects).toEqual([]);
+    await expect(bob.addProject(aRoot)).rejects.toThrow(/configured roots/);
+    await expect(
+      bob.createWorkspace({ source: { kind: "directory", path: aRoot } }),
+    ).rejects.toThrow(/configured roots/);
+    const agent = await alice.createAgent({
+      provider: "codex",
+      cwd: path.join(aRoot, "web-shop"),
+      title: "Alice chat",
+    });
+    expect((await alicePhone.fetchAgents()).entries.map((entry) => entry.agent.id)).toContain(
+      agent.id,
+    );
+    expect((await bob.fetchAgents()).entries).toEqual([]);
+    const terminal = await alice.createTerminal(
+      path.join(aRoot, "web-shop"),
+      "Alice shell",
+      undefined,
+      { workspaceId: agent.workspaceId },
+    );
+    expect(terminal.error).toBeNull();
+    expect(terminal.terminal).not.toBeNull();
+    expect((await bob.listTerminals()).terminals).toEqual([]);
+    const status = await fetch(`http://127.0.0.1:${daemon.port}/api/status`, {
+      headers: { Authorization: "Bearer bob-pass" },
+    });
+    expect((await status.json()).serverId).toBe(bob.getLastServerInfoMessage()?.serverId);
+    expect((await fetch(`http://127.0.0.1:${daemon.port}/_paseo/_owner/api/status`)).status).toBe(
+      404,
+    );
+    await alicePhone.close();
+    const reconnected = makeClient("alice-pass");
+    try {
+      await reconnected.connect();
+      expect((await reconnected.fetchAgents()).entries.map((entry) => entry.agent.id)).toContain(
+        agent.id,
+      );
+    } finally {
+      await reconnected.close();
+    }
+    await Promise.all([alice.close(), alicePhone.close(), bob.close(), wrong.close()]);
+    await daemon.close();
+    const restarted = await createTestPaseoDaemon({
+      paseoHomeRoot: root,
+      staticDir: root,
+      cleanup: false,
+      mcpEnabled: false,
+      pluginsEnabled: false,
+      userSpaces: daemon.config.userSpaces?.map((space) =>
+        space.id === "alice" ? { ...space, passwordHash: hashSync("alice-rotated", 4) } : space,
+      ),
+    });
+    const restored = new DaemonClient({
+      url: `ws://127.0.0.1:${restarted.port}/ws`,
+      password: "alice-rotated",
+    });
+    try {
+      await restored.connect();
+      expect(restored.getLastServerInfoMessage()?.serverId).toBe(aliceServerId);
+      expect((await restored.fetchAgents()).entries.map((entry) => entry.agent.id)).toContain(
+        agent.id,
+      );
+      expect((await restored.listProjects()).projects).toHaveLength(1);
+    } finally {
+      await restored.close();
+      await restarted.close();
+    }
+    expect(
+      JSON.parse(
+        await readFile(
+          path.join(daemon.paseoHome, "users", "alice", "projects", "projects.json"),
+          "utf8",
+        ),
+      ),
+    ).toBeTruthy();
+  } finally {
+    await Promise.all([alice.close(), alicePhone.close(), bob.close(), wrong.close()]);
+    await daemon.close();
+    await rm(root, { recursive: true, force: true });
+  }
+}, 60_000);

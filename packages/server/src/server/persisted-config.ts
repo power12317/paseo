@@ -78,6 +78,37 @@ const BcryptHashSchema = z.string().regex(/^\$2[aby]\$\d{2}\$[./A-Za-z0-9]{53}$/
   message: "Expected a bcrypt hash",
 });
 
+export const UserSpaceSchema = z
+  .object({
+    id: z.string().regex(/^[a-zA-Z0-9][a-zA-Z0-9_-]{0,63}$/),
+    name: z.string().trim().min(1).optional(),
+    passwordHash: BcryptHashSchema,
+    projectRoots: z.array(z.string().trim().min(1)).min(1),
+  })
+  .strict();
+
+const UserSpacesSchema = z
+  .array(UserSpaceSchema)
+  .min(1)
+  .superRefine((spaces, ctx) => {
+    const ids = new Set<string>();
+    const hashes = new Set<string>();
+    spaces.forEach((space, index) => {
+      if (ids.has(space.id))
+        ctx.addIssue({ code: "custom", path: [index, "id"], message: "Duplicate user space id" });
+      if (hashes.has(space.passwordHash))
+        ctx.addIssue({
+          code: "custom",
+          path: [index, "passwordHash"],
+          message: "Duplicate user space credential",
+        });
+      ids.add(space.id);
+      hashes.add(space.passwordHash);
+    });
+  });
+
+export type UserSpace = z.infer<typeof UserSpaceSchema>;
+
 const DaemonAuthSchema = z
   .object({
     password: BcryptHashSchema.optional(),
@@ -325,6 +356,7 @@ export const PersistedConfigSchema = z
           .strict()
           .optional(),
         auth: DaemonAuthSchema.optional(),
+        userSpaces: UserSpacesSchema.optional(),
       })
       .strict()
       .transform(({ allowedHosts, ...daemon }) => {

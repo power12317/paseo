@@ -98,3 +98,6 @@ app.json
 
 # Project-local Serena configuration and memories.
 .serena/
+
+# Fork packages are published by GitHub Actions, never committed to source.
+/releases/

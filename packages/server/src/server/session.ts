@@ -1,3 +1,4 @@
+import { assertProjectRequest, searchUserDirectories } from "./user-spaces/project-directories.js";
 import { type WorkspaceRuntimeStore } from "./workspace-runtime-store/index.js";
 import type { AgentMessageDelivery } from "./agent/agent-messages/index.js";
 import { AgentDirectory } from "./agent/directory.js";
@@ -441,6 +442,7 @@ const nodeSessionFileSystem: SessionFileSystem = {
 type AgentMcpTransportFactory = () => Promise<unknown>;
 
 export interface SessionOptions {
+  projectRoots?: readonly string[];
   connectedHosts?: ConnectedHosts;
   sourceId?: string;
   routed?: boolean;
@@ -723,6 +725,7 @@ export class Session {
   );
   private readonly browserToolsBroker: SessionOptions["browserToolsBroker"];
   private readonly clientId: string;
+  private readonly projectRoots?: readonly string[];
   private readonly authorization: SessionAuthorization;
   private appVersion: string | null;
   private clientCapabilities: ReadonlySet<ClientCapability>;
@@ -831,6 +834,7 @@ export class Session {
   private readonly creationService: Pick<CreationService, "create" | "subscribe">;
 
   constructor(options: SessionOptions) {
+    this.projectRoots = options.projectRoots;
     const {
       clientId,
       permissions,
@@ -2244,6 +2248,7 @@ export class Session {
         return;
       }
       try {
+        await assertProjectRequest(this.projectRoots, msg);
         await this.dispatchInboundMessage(msg, source);
       } catch (error) {
         const err = error instanceof Error ? error : new Error(String(error));
@@ -5216,6 +5221,19 @@ export class Session {
     const { query, limit, requestId, cwd, includeFiles, includeDirectories, matchMode } = msg;
 
     try {
+      if (this.projectRoots && !cwd?.trim()) {
+        const entries = await searchUserDirectories({ roots: this.projectRoots, query, limit });
+        this.emit({
+          type: "directory_suggestions_response",
+          payload: {
+            directories: entries.map((entry) => entry.path),
+            entries,
+            error: null,
+            requestId,
+          },
+        });
+        return;
+      }
       const workspaceCwd = cwd?.trim();
       const searchesWorkspace = Boolean(workspaceCwd);
       const homeRoot = process.env.HOME ?? homedir();

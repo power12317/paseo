@@ -147,3 +147,21 @@ describe("DefaultNpmGlobalPaseoCli", () => {
     );
   });
 });
+
+test("fork self-update reads the installed wrapper's tarball URL", async () => {
+  const { resolveCliUpdateTarget } = await import("./npm-global-cli.js");
+  const { writeFile, mkdir, rm } = await import("node:fs/promises");
+  const root = mkdtempSync(path.join(tmpdir(), "paseo-fork-update-"));
+  const server = path.join(root, "node_modules", "@getpaseo", "server", "dist");
+  const updateUrl = "https://github.com/power12317/paseo/releases/latest/download/paseo-latest.tgz";
+  try {
+    await mkdir(server, { recursive: true });
+    await writeFile(
+      path.join(root, "package.json"),
+      JSON.stringify({ name: "@getpaseo/cli", paseoFork: { updateUrl } }),
+    );
+    expect(await resolveCliUpdateTarget(server)).toBe(updateUrl);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});

@@ -38,6 +38,11 @@ export class DownloadTokenStore {
     return entry;
   }
 
+  hasToken(token: string): boolean {
+    const entry = this.tokens.get(token);
+    return entry !== undefined && entry.expiresAt > this.now();
+  }
+
   consumeToken(token: string): DownloadTokenEntry | null {
     const entry = this.tokens.get(token);
     if (!entry) {

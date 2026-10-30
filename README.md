@@ -1,3 +1,5 @@
+> **Paseo-mod:** Password-selected user spaces and project-root directory search, with the existing Paseo clients. [Installation, configuration and upgrades](FORK.md).
+
 <p align="center">
   <img src="packages/website/public/logo.svg" width="64" height="64" alt="Paseo logo">
 </p>

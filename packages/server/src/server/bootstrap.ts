@@ -1,3 +1,9 @@
+import { assertProjectPath } from "./user-spaces/project-directories.js";
+import { OWNER_PERMISSIONS } from "./authorization/index.js";
+import { createPasswordSpaceDaemon } from "./user-spaces/gateway.js";
+import type { UserSpace } from "./persisted-config.js";
+import type { WSHelloMessage } from "@getpaseo/protocol/messages";
+import type { WebSocketLike, ExternalSocketMetadata } from "./websocket-server.js";
 import { createRestartRecovery } from "./agent/restart-recovery/index.js";
 import { sendPromptToAgent } from "./agent/agent-prompt.js";
 import { createIdleRuntimeCleanup } from "./agent/idle-runtime-cleanup/index.js";
@@ -185,7 +191,7 @@ import type { TerminalManager } from "../terminal/terminal-manager.js";
 import { startWorkerTerminalManager } from "../terminal/worker-terminal-manager.js";
 import { applyTerminalAgentHookSetting } from "../terminal/agent-hooks/terminal-agent-hook-setting.js";
 import { loadOrCreateDaemonKeyPair } from "./daemon-keypair.js";
-import { createRelayRuntime, type RelayRuntime } from "./relay-runtime.js";
+import { createRelayRuntime, type RelayRuntime, type RelayRuntimeConfig } from "./relay-runtime.js";
 import { admitSecuredRelaySocket } from "./websocket/secure-relay-ingress.js";
 import type { PushNotificationSender } from "./push/index.js";
 import { getOrCreateServerId } from "./server-id.js";
@@ -271,24 +277,27 @@ function resolveAgentMcpClientHost(host: string): string {
   return host;
 }
 
-function createAgentMcpBaseUrl(listenTarget: ListenTarget | null): string | null {
+function createAgentMcpBaseUrl(listenTarget: ListenTarget | null, basePath = ""): string | null {
   if (!listenTarget || listenTarget.type !== "tcp") {
     return null;
   }
   const host = resolveAgentMcpClientHost(listenTarget.host);
   return new URL(
-    "/mcp/agents",
+    `${basePath}/mcp/agents`,
     `http://${formatHostForHttpUrl(host)}:${listenTarget.port}`,
   ).toString();
 }
 
-function createTerminalActivityUrl(listenTarget: ListenTarget | null): string | null {
+function createTerminalActivityUrl(
+  listenTarget: ListenTarget | null,
+  basePath = "",
+): string | null {
   if (!listenTarget || listenTarget.type !== "tcp") {
     return null;
   }
   const host = resolveAgentMcpClientHost(listenTarget.host);
   return new URL(
-    "/api/terminal-activity",
+    `${basePath}/api/terminal-activity`,
     `http://${formatHostForHttpUrl(host)}:${listenTarget.port}`,
   ).toString();
 }
@@ -410,6 +419,8 @@ export type DaemonLifecycleIntent =
 
 export interface PaseoDaemonConfig {
   listen: string;
+  userSpaces?: UserSpace[];
+  projectRoots?: string[];
   paseoHome: string;
   daemonVersion?: string;
   desktopManaged?: boolean;
@@ -502,11 +513,24 @@ export interface PaseoDaemon {
   start(): Promise<void>;
   /** Stops the daemon. Terminals keep running for the next daemon only with keepTerminals. */
   stop(options?: { keepTerminals?: boolean }): Promise<void>;
+  dispatchHttp(req: IncomingMessage, res: ServerResponse): void;
+  attachClient(
+    ws: WebSocketLike,
+    hello: WSHelloMessage,
+    metadata?: ExternalSocketMetadata,
+  ): Promise<void>;
+  ownsDownloadToken(token: string): boolean;
   getListenTarget(): ListenTarget | null;
   getServerId(): string;
 }
 
 export interface PaseoDaemonDependencies {
+  virtualTransport?: {
+    target: ListenTarget;
+    basePath: string;
+    pairingHome: string;
+    getRelayConfig: () => RelayRuntimeConfig;
+  };
   builtinPlugins?: BuiltinPluginLoader;
   hubRelationshipRemote?: HubRelationshipRemote;
   hubRelationshipClock?: HubRelationshipClock;
@@ -624,6 +648,15 @@ export async function createPaseoDaemon(
   rootLogger: Logger,
   dependencies: PaseoDaemonDependencies = {},
 ): Promise<PaseoDaemon> {
+  if (config.userSpaces?.length) return createPasswordSpaceDaemon(config, rootLogger, dependencies);
+  return createSingleSpaceDaemon(config, rootLogger, dependencies);
+}
+
+async function createSingleSpaceDaemon(
+  config: PaseoDaemonConfig,
+  rootLogger: Logger,
+  dependencies: PaseoDaemonDependencies,
+): Promise<PaseoDaemon> {
   configureGitProcessPolicy(config.git ?? resolveGitProcessPolicy({ env: process.env }));
   const logger = rootLogger.child({ module: "bootstrap" });
   const obsoleteTimelineDirectory = path.join(config.paseoHome, "agent-timelines");
@@ -724,7 +757,8 @@ export async function createPaseoDaemon(
     paseoHome: config.paseoHome,
     paseoVersion: daemonVersion,
     logger,
-    getTerminalActivityUrl: () => createTerminalActivityUrl(boundListenTarget),
+    getTerminalActivityUrl: () =>
+      createTerminalActivityUrl(boundListenTarget, dependencies.virtualTransport?.basePath),
   });
   applyTerminalAgentHookSetting({ store: daemonConfigStore, logger });
 
@@ -982,7 +1016,10 @@ export async function createPaseoDaemon(
     projectRegistry,
     workspaceRegistry,
     workspaceGitService,
-    isDirectory: async (target) => (await stat(target).catch(() => null))?.isDirectory() ?? false,
+    isDirectory: async (target) => {
+      if (config.projectRoots) await assertProjectPath(config.projectRoots, target);
+      return (await stat(target).catch(() => null))?.isDirectory() ?? false;
+    },
     logger,
   });
   const agentProviderRuntime = await createAgentProviderRuntime({
@@ -1734,6 +1771,7 @@ export async function createPaseoDaemon(
 
   logger.info({ elapsed: elapsed() }, "Bootstrap complete, ready to start listening");
 
+  const pairingHome = dependencies.virtualTransport?.pairingHome;
   const start = async () => {
     let mainStarted = false;
     try {
@@ -1763,8 +1801,13 @@ export async function createPaseoDaemon(
           httpServer.off("error", onError);
           mainStarted = true;
           const logAndResolve = async () => {
-            boundListenTarget = resolveBoundListenTarget(listenTarget, httpServer);
-            const mcpBaseUrl = createAgentMcpBaseUrl(boundListenTarget);
+            boundListenTarget =
+              dependencies.virtualTransport?.target ??
+              resolveBoundListenTarget(listenTarget, httpServer);
+            const mcpBaseUrl = createAgentMcpBaseUrl(
+              boundListenTarget,
+              dependencies.virtualTransport?.basePath,
+            );
             agentMcpBaseUrl =
               !mcpEnabled || config.mcpInjectIntoAgents === false ? null : mcpBaseUrl;
             agentManager.setMcpBaseUrl(agentMcpBaseUrl);
@@ -1829,6 +1872,7 @@ export async function createPaseoDaemon(
                 daemonStatusRpc: dependencies.serverFeatureOverrides?.daemonStatusRpc,
                 relayConfig: dependencies.serverFeatureOverrides?.relayConfig,
                 startPaused: true,
+                projectRoots: config.projectRoots,
               },
               workspaceAutoName,
               workspaceRuntimeStore,
@@ -1863,18 +1907,20 @@ export async function createPaseoDaemon(
               {
                 listen: formatListenTarget(boundListenTarget ?? listenTarget),
                 worktreesRoot: config.worktreesRoot,
+                pairingHome,
                 get appBaseUrl() {
                   return appBaseUrl;
                 },
                 desktopManaged: config.desktopManaged === true,
                 getRelayConfig: () => ({
-                  ...(relayRuntime?.getConfig() ?? {
-                    enabled: daemonConfigStore.get().relay?.enabled ?? relayEnabled,
-                    endpoint: relayEndpoint,
-                    publicEndpoint: relayPublicEndpoint,
-                    useTls: relayUseTls,
-                    publicUseTls: relayPublicUseTls,
-                  }),
+                  ...(dependencies.virtualTransport?.getRelayConfig() ??
+                    relayRuntime?.getConfig() ?? {
+                      enabled: daemonConfigStore.get().relay?.enabled ?? relayEnabled,
+                      endpoint: relayEndpoint,
+                      publicEndpoint: relayPublicEndpoint,
+                      useTls: relayUseTls,
+                      publicUseTls: relayPublicUseTls,
+                    }),
                   requireProtectedSecurity:
                     daemonConfigStore.get().relay?.requireProtectedSecurity === true,
                 }),
@@ -1934,7 +1980,9 @@ export async function createPaseoDaemon(
         httpServer.once("error", onError);
         httpServer.once("listening", onListening);
 
-        if (listenTarget.type === "tcp") {
+        if (dependencies.virtualTransport) {
+          httpServer.emit("listening");
+        } else if (listenTarget.type === "tcp") {
           httpServer.listen(listenTarget.port, listenTarget.host);
         } else {
           if (listenTarget.type === "socket" && existsSync(listenTarget.path)) {
@@ -2047,6 +2095,19 @@ export async function createPaseoDaemon(
     browserToolsBroker,
     start,
     stop,
+    dispatchHttp: (req, res) => {
+      httpServer.emit("request", req, res);
+    },
+    attachClient: async (ws, hello, metadata) => {
+      if (!wsServer) throw new Error("User space is not ready");
+      await wsServer.attachExternalSocket(
+        ws,
+        metadata,
+        { principalId: "owner", permissions: OWNER_PERMISSIONS },
+        hello,
+      );
+    },
+    ownsDownloadToken: (token) => downloadTokenStore.hasToken(token),
     getListenTarget: () => boundListenTarget,
     getServerId: () => serverId,
   };

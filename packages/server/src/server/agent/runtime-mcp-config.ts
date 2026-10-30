@@ -63,7 +63,10 @@ function isInternalPaseoMcpServer(config: McpServerConfig): boolean {
   }
 
   try {
-    return new URL(config.url).pathname === PASEO_MCP_PATHNAME;
+    const pathname = new URL(config.url).pathname;
+    return (
+      pathname === PASEO_MCP_PATHNAME || /^\/_paseo\/[a-zA-Z0-9_-]+\/mcp\/agents$/.test(pathname)
+    );
   } catch {
     return false;
   }

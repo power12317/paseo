@@ -527,3 +527,33 @@ describe("DaemonSession", () => {
     expect(message.payload.diagnostic).toContain("Agent lifecycle: idle=8, running=2");
   });
 });
+
+test("password-space pairing uses the gateway identity rather than the user's private runtime", async () => {
+  const sharedHome = makeHome();
+  const { getOrCreateServerId } = await import("../../server-id.js");
+  const { parseConnectionOfferFromUrl } = await import("@getpaseo/protocol/connection-offer");
+  const { subsystem, emitted, paseoHome } = makeSubsystem({
+    daemonRuntimeConfig: {
+      listen: "127.0.0.1:6767",
+      pairingHome: sharedHome,
+      getRelayConfig: () => ({
+        enabled: true,
+        endpoint: "relay.example.test:443",
+        publicEndpoint: "relay.example.test:443",
+        useTls: true,
+        publicUseTls: true,
+      }),
+    },
+  });
+  await subsystem.handleGetPairingOfferRequest({
+    type: "daemon.get_pairing_offer.request",
+    requestId: "shared-pairing",
+  });
+  const response = emitted.find((message) => message.type === "daemon.get_pairing_offer.response");
+  expect(response?.type).toBe("daemon.get_pairing_offer.response");
+  if (response?.type !== "daemon.get_pairing_offer.response")
+    throw new Error("Missing pairing offer");
+  const offer = parseConnectionOfferFromUrl(response.payload.url);
+  expect(offer?.serverId).toBe(getOrCreateServerId(sharedHome));
+  expect(offer?.serverId).not.toBe(getOrCreateServerId(paseoHome));
+});

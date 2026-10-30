@@ -1,0 +1,159 @@
+name: Fork daemon release
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  actions: write
+
+concurrency:
+  group: fork-daemon-release
+  cancel-in-progress: true
+
+env:
+  ONNXRUNTIME_NODE_INSTALL: skip
+  ELECTRON_SKIP_BINARY_DOWNLOAD: "1"
+
+jobs:
+  release:
+    if: github.repository == 'power12317/paseo'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+      - name: Remove superseded fork release metadata
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const repository = context.repo;
+            const main = await github.rest.repos.getBranch({ ...repository, branch: 'main' });
+            if (main.data.commit.sha !== context.sha) {
+              core.info('A newer source owns metadata cleanup.');
+              return;
+            }
+            const obsoleteSources = new Set();
+            const releases = await github.paginate(github.rest.repos.listReleases, { ...repository, per_page: 100 });
+            let removed = 0;
+            for (const release of releases) {
+              if (!/^fork-v\d+\.\d+\.\d+-/.test(release.tag_name) || /-mod\.\d+$/.test(release.tag_name)) continue;
+              if (/^[a-f0-9]{40}$/.test(release.target_commitish)) obsoleteSources.add(release.target_commitish);
+              await github.rest.repos.deleteRelease({ ...repository, release_id: release.id });
+              removed++;
+            }
+            const previousBuilds = await github.paginate(github.rest.actions.listWorkflowRuns, { ...repository, workflow_id: 'fork-release.yml', branch: 'main', per_page: 100 });
+            for (const run of previousBuilds) {
+              if (run.id >= context.runId || run.head_sha === context.sha) continue;
+              try {
+                const comparison = await github.rest.repos.compareCommitsWithBasehead({ ...repository, basehead: `${run.head_sha}...${context.sha}` });
+                if (comparison.data.status === 'diverged' || comparison.data.status === 'behind') obsoleteSources.add(run.head_sha);
+              } catch (error) {
+                if (error.status !== 404) throw error;
+                obsoleteSources.add(run.head_sha);
+              }
+            }
+            const runs = await github.paginate(github.rest.actions.listWorkflowRunsForRepo, { ...repository, per_page: 100 });
+            for (const run of runs) {
+              if (run.id === context.runId || !obsoleteSources.has(run.head_sha)) continue;
+              if (run.status !== 'completed') {
+                await github.rest.actions.cancelWorkflowRun({ ...repository, run_id: run.id }).catch(() => {});
+                for (let attempt = 0; attempt < 20; attempt++) {
+                  const current = await github.rest.actions.getWorkflowRun({ ...repository, run_id: run.id });
+                  if (current.data.status === 'completed') break;
+                  await new Promise((resolve) => setTimeout(resolve, 1000));
+                }
+              }
+              await github.rest.actions.deleteWorkflowRun({ ...repository, run_id: run.id });
+            }
+            core.info(`Removed ${removed} superseded fork release records and their workflow records.`);
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+      - name: Install daemon workspaces
+        run: >-
+          npm ci --workspace=@getpaseo/server --workspace=@getpaseo/cli
+          --workspace=@getpaseo/client --workspace=@getpaseo/protocol
+          --workspace=@getpaseo/plugin --workspace=@getpaseo/highlight
+          --workspace=@getpaseo/relay --include-workspace-root=false
+          --ignore-scripts --no-audit --no-fund
+      - name: Install build tools
+        run: |
+          npm install --prefix "$RUNNER_TEMP/paseo-build-tools" --ignore-scripts --no-audit --no-fund concurrently@9.2.1 oxfmt@0.46.0 oxlint@1.61.0 @typescript/native-preview@7.0.0-dev.20260423.1
+          echo "$RUNNER_TEMP/paseo-build-tools/node_modules/.bin" >> "$GITHUB_PATH"
+          npm rebuild node-pty
+      - name: Build daemon and CLI
+        run: npm run build:server
+      - name: Typecheck daemon workspaces
+        run: npm run typecheck:server
+      - name: Lint changed implementation
+        run: >-
+          npm run lint -- packages/server/src/server/user-spaces
+          packages/server/src/server/bootstrap.ts packages/server/src/server/config.ts
+          packages/server/src/server/persisted-config.ts packages/server/src/server/session.ts
+          packages/server/src/server/websocket-server.ts
+          packages/server/src/server/agent/runtime-mcp-config.ts
+          packages/server/src/server/session/daemon/npm-global-cli.ts
+          packages/cli/src/commands/daemon/users.ts scripts/build-fork-package.mjs
+      - name: Test directory search, configuration, MCP and upgrades
+        working-directory: packages/server
+        run: >-
+          npx vitest run src/utils/directory-suggestions.test.ts
+          src/server/config-auth.test.ts src/server/agent/runtime-mcp-config.test.ts
+          src/server/session/daemon/daemon-session.test.ts
+          src/server/session/daemon/npm-global-cli.test.ts --bail=1
+      - name: Test two users, terminals and restart recovery
+        working-directory: packages/server
+        run: npx vitest run src/server/owned-subscriptions.e2e.test.ts -t 'password spaces keep' --bail=1
+      - name: Test user configuration CLI
+        working-directory: packages/cli
+        run: npx tsx tests/32-daemon-set-password.test.ts
+      - name: Set fork version
+        id: version
+        run: |
+          VERSION="$(node -p "require('./package.json').version.split('-')[0]")-mod.${GITHUB_RUN_NUMBER}"
+          echo "value=$VERSION" >> "$GITHUB_OUTPUT"
+      - name: Build npm tarball
+        run: node scripts/build-fork-package.mjs '${{ steps.version.outputs.value }}'
+      - name: Verify clean npm install
+        run: |
+          npm install --global --prefix "$RUNNER_TEMP/paseo-install" ./releases/paseo-latest.tgz --no-audit --no-fund
+          "$RUNNER_TEMP/paseo-install/bin/paseo" --version
+          "$RUNNER_TEMP/paseo-install/bin/paseo" daemon users --help
+          node scripts/smoke-fork-package.mjs "$RUNNER_TEMP/paseo-install"
+      - name: Check this is still the latest source
+        id: latest
+        run: |
+          git fetch origin main --depth=1
+          if [ "$(git rev-parse origin/main)" = "$GITHUB_SHA" ]; then
+            echo "publish=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "publish=false" >> "$GITHUB_OUTPUT"
+            echo "A newer main revision will publish its own release."
+          fi
+      - name: Publish GitHub Release
+        if: steps.latest.outputs.publish == 'true'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: fork-v${{ steps.version.outputs.value }}
+          name: Paseo-mod ${{ steps.version.outputs.value }}
+          target_commitish: ${{ github.sha }}
+          make_latest: true
+          prerelease: false
+          body: |
+            Password-selected personal spaces, fixed project roots, and fast relative directory search. Uses the existing Paseo clients.
+
+            Install or upgrade:
+            `npm install -g https://github.com/power12317/paseo/releases/latest/download/paseo-latest.tgz`
+
+            This URL replaces the official global `@getpaseo/cli` installation with this fork. The existing daemon self-update operation stays on this fork. Requires Node.js 22+.
+
+            See FORK.md at this release's source commit for user configuration and search shortcuts. Package integrity and source revision are recorded in latest.json.
+          files: |
+            releases/*.tgz
+            releases/latest.json
+          fail_on_unmatched_files: true

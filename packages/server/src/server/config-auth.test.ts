@@ -57,4 +57,17 @@ describe("daemon auth config", () => {
       await isBearerTokenValidAsync({ password: config.auth?.password, token: "from-env" }),
     ).toBe(true);
   });
+  test("loads password spaces and rejects duplicate ids", async () => {
+    const space = {
+      id: "alice",
+      passwordHash: CONFIG_PASSWORD_HASH,
+      projectRoots: ["/Volumes/team/alice"],
+    };
+    const home = await createPaseoHome({ daemon: { userSpaces: [space] } });
+    expect(loadConfig(home, { env: {} }).userSpaces).toEqual([space]);
+    const { PersistedConfigSchema } = await import("./persisted-config.js");
+    expect(
+      PersistedConfigSchema.safeParse({ daemon: { userSpaces: [space, space] } }).success,
+    ).toBe(false);
+  });
 });

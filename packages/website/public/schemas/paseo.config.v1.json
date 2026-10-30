@@ -249,6 +249,37 @@
             }
           },
           "additionalProperties": false
+        },
+        "userSpaces": {
+          "minItems": 1,
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string",
+                "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_-]{0,63}$"
+              },
+              "name": {
+                "type": "string",
+                "minLength": 1
+              },
+              "passwordHash": {
+                "type": "string",
+                "pattern": "^\\$2[aby]\\$\\d{2}\\$[./A-Za-z0-9]{53}$"
+              },
+              "projectRoots": {
+                "minItems": 1,
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "minLength": 1
+                }
+              }
+            },
+            "required": ["id", "passwordHash", "projectRoots"],
+            "additionalProperties": false
+          }
         }
       },
       "additionalProperties": false

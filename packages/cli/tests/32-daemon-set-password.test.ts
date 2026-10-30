@@ -130,6 +130,25 @@ try {
     await assert.rejects(readFile(join(pipedHome, "config.json"), "utf-8"));
     console.log("✓ piped stdin reports that a terminal is required\n");
   }
+  {
+    console.log("Test: password spaces retain roots and reject reused credentials");
+    const { savePasswordSpace } = await import("../src/commands/daemon/users.ts");
+    const userRoot = join(root, "alice-projects");
+    await mkdir(userRoot);
+    await savePasswordSpace(paseoHome, "alice", [userRoot], "alice-unique");
+    const configured = JSON.parse(await readFile(join(paseoHome, "config.json"), "utf8"));
+    assert.deepStrictEqual(configured.daemon.userSpaces[0].projectRoots, [userRoot]);
+    assert.notStrictEqual(configured.daemon.userSpaces[0].passwordHash, "alice-unique");
+    await assert.rejects(
+      savePasswordSpace(paseoHome, "bob", [userRoot], "alice-unique"),
+      /already belongs/,
+    );
+    await savePasswordSpace(paseoHome, "alice", [userRoot], "alice-rotated");
+    const changed = JSON.parse(await readFile(join(paseoHome, "config.json"), "utf8"));
+    assert.strictEqual(changed.daemon.userSpaces.length, 1);
+    assert.strictEqual(changed.daemon.userSpaces[0].id, "alice");
+    console.log("✓ users configuration is private, stable, and preserves existing daemon fields");
+  }
 } finally {
   await rm(root, { recursive: true, force: true });
 }

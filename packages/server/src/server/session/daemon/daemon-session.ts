@@ -15,6 +15,7 @@ import type { HubRelationshipManagement } from "../../hub/relationship-controlle
 import type { DaemonConfigReloadResult } from "../../daemon-config-store.js";
 
 export interface DaemonRuntimeConfig {
+  pairingHome?: string;
   listen: string | null;
   worktreesRoot?: string;
   appBaseUrl?: string;
@@ -235,7 +236,7 @@ export class DaemonSession {
     try {
       const relay = this.daemonRuntimeConfig?.getRelayConfig();
       const pairing = await generateLocalPairingOffer({
-        paseoHome: this.paseoHome,
+        paseoHome: this.daemonRuntimeConfig?.pairingHome ?? this.paseoHome,
         relayEnabled: relay?.enabled ?? false,
         relayEndpoint: relay?.endpoint,
         relayPublicEndpoint: relay?.publicEndpoint,

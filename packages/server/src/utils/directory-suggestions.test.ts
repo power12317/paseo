@@ -1281,3 +1281,41 @@ describe("filesystem threads held by concurrent searches", () => {
     expect(peak).toBe(1);
   });
 });
+
+describe("password-space directory suggestions", () => {
+  it("finds short names, completes relative prefixes, and follows configured mount aliases", async () => {
+    const { searchUserDirectories, assertProjectPath } =
+      await import("../server/user-spaces/project-directories.js");
+    const root = mkdtempSync(path.join(tmpdir(), "paseo-space-search-"));
+    const mounted = path.join(root, "mounted-share");
+    const alias = path.join(root, "Documents-share");
+    mkdirSync(path.join(mounted, "团队", "订单服务"), { recursive: true });
+    mkdirSync(path.join(mounted, "团队", "管理后台"), { recursive: true });
+    mkdirSync(path.join(root, "other-person"));
+    symlinkSync(mounted, alias, process.platform === "win32" ? "junction" : "dir");
+    try {
+      const search = (query: string) => searchUserDirectories({ roots: [alias], query });
+      expect((await search("订单")).map((item) => item.path)).toContain(
+        path.join(alias, "团队", "订单服务"),
+      );
+      expect((await search("团队/订")).map((item) => item.path)).toEqual([
+        path.join(alias, "团队", "订单服务"),
+      ]);
+      expect((await search("团队/")).map((item) => item.path)).toContain(
+        path.join(alias, "团队", "管理后台"),
+      );
+      expect((await search(".")).map((item) => item.path)).toContain(path.join(alias, "团队"));
+      await expect(
+        assertProjectPath([alias], path.join(mounted, "团队", "new-project")),
+      ).resolves.toBeUndefined();
+      await expect(assertProjectPath([alias], path.join(root, "other-person"))).rejects.toThrow(
+        /configured roots/,
+      );
+      await expect(
+        searchUserDirectories({ roots: [alias], query: "../../other-person/" }),
+      ).resolves.toEqual([]);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+});
