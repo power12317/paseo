@@ -78,7 +78,7 @@ jobs:
                 } else if (attempt === 0) {
                   await github.rest.actions.cancelWorkflowRun({ ...repository, run_id: run.id }).catch(() => {});
                 } else if (attempt === 5) {
-                  await github.rest.actions.forceCancelWorkflowRun({ ...repository, run_id: run.id }).catch(() => {});
+                  await github.request('POST /repos/{owner}/{repo}/actions/runs/{run_id}/force-cancel', { ...repository, run_id: run.id }).catch(() => {});
                 }
                 await new Promise((resolve) => setTimeout(resolve, 2000));
               }
