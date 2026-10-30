@@ -59,15 +59,30 @@ jobs:
             const runs = await github.paginate(github.rest.actions.listWorkflowRunsForRepo, { ...repository, per_page: 100 });
             for (const run of runs) {
               if (run.id === context.runId || !obsoleteSources.has(run.head_sha)) continue;
-              if (run.status !== 'completed') {
-                await github.rest.actions.cancelWorkflowRun({ ...repository, run_id: run.id }).catch(() => {});
-                for (let attempt = 0; attempt < 20; attempt++) {
-                  const current = await github.rest.actions.getWorkflowRun({ ...repository, run_id: run.id });
-                  if (current.data.status === 'completed') break;
-                  await new Promise((resolve) => setTimeout(resolve, 1000));
+              let deleted = false;
+              for (let attempt = 0; attempt < 60; attempt++) {
+                const current = await github.rest.actions.getWorkflowRun({ ...repository, run_id: run.id }).catch((error) => {
+                  if (error.status === 404) return null;
+                  throw error;
+                });
+                if (!current) { deleted = true; break; }
+                if (current.data.status === 'completed') {
+                  try {
+                    await github.rest.actions.deleteWorkflowRun({ ...repository, run_id: run.id });
+                    deleted = true;
+                    break;
+                  } catch (error) {
+                    if (error.status === 404) { deleted = true; break; }
+                    if (![409, 422, 500, 502, 503].includes(error.status)) throw error;
+                  }
+                } else if (attempt === 0) {
+                  await github.rest.actions.cancelWorkflowRun({ ...repository, run_id: run.id }).catch(() => {});
+                } else if (attempt === 5) {
+                  await github.rest.actions.forceCancelWorkflowRun({ ...repository, run_id: run.id }).catch(() => {});
                 }
+                await new Promise((resolve) => setTimeout(resolve, 2000));
               }
-              await github.rest.actions.deleteWorkflowRun({ ...repository, run_id: run.id });
+              if (!deleted) throw new Error(`Unable to remove obsolete workflow record ${run.id}`);
             }
             core.info(`Removed ${removed} superseded fork release records and their workflow records.`);
       - uses: actions/setup-node@v4
