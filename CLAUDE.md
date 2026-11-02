@@ -24,6 +24,7 @@ At the start of non-trivial work, list `docs/` and skim anything relevant to the
 | Doc                                                                  | What's in it                                                                                                                   |
 | -------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------ |
 | [FORK.md](FORK.md)                                                   | Paseo-mod: password spaces, search, installation and tarball release process                                                   |
+| [docs/multi-user-cli.zh-CN.md](docs/multi-user-cli.zh-CN.md)         | Chinese operator guide: password spaces, user maintenance, backups and troubleshooting                                         |
 | [docs/product.md](docs/product.md)                                   | What Paseo is, who it's for, where it's going                                                                                  |
 | [docs/architecture.md](docs/architecture.md)                         | System design, package layering, WebSocket protocol, agent lifecycle, data flow                                                |
 | [docs/agent-lifecycle.md](docs/agent-lifecycle.md)                   | Agent states, parent/child relationships, archive semantics, tabs vs archive, subagents track                                  |

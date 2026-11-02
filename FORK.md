@@ -21,33 +21,9 @@ Paseo Desktop manages its own bundled local daemon; use the installed fork as a 
 
 ## Configure users on the Mac mini
 
-```sh
-paseo daemon users set alice --root "/Volumes/团队共享/张三"
-paseo daemon users set bob --root "$HOME/Documents/xxx/李四"
-paseo daemon users list
-```
+See the [Chinese multi-user CLI guide](docs/multi-user-cli.zh-CN.md) for user creation, password and root updates, client connections, deactivation, backups and troubleshooting.
 
-`set` prompts for a password twice and stores only its bcrypt hash. Re-running it for the same id updates roots/password while retaining user data. The roots must exist when configuring the user. Multiple roots can follow `--root`. A user's password must differ from every other user and the owner password.
-
-These commands edit `~/.paseo/config.json`. To select another daemon home, add `--home /absolute/paseo-home`. User configuration takes effect after restarting the daemon; these commands never restart it automatically.
-
-Configure the existing `daemon.listen` for your LAN/VPN address, for example:
-
-```sh
-paseo daemon config set daemon.listen '0.0.0.0:6767'
-```
-
-Start/restart the CLI-managed daemon after configuration. Each person adds that same remote address to their existing Paseo client and enters their own password. The daemon returns a stable, distinct server identity for each user to keep client caches separate. Multiple devices using the same password enter the same space.
-
-Local CLI commands without a user password select the owner space through its local credential. To select a colleague's space explicitly, use a remote target with `PASEO_PASSWORD`:
-
-```sh
-PASEO_PASSWORD='<your-space-password>' paseo --host 127.0.0.1:6767 project ls
-```
-
-Avoid putting real passwords into shell history; the example describes the environment variable accepted by the CLI. Use environment injection when scripting.
-
-For manual configuration, `daemon.userSpaces` contains entries with `id`, optional `name`, `passwordHash`, and a nonempty `projectRoots` array. User ids accept 1–64 letters, digits, `_` and `-`, starting with a letter or digit. State lives in `~/.paseo/users/<id>/`. Removing a user disables their connection after restart and retains their data directory. Existing root-level data remains in the owner space.
+Manual configuration uses `daemon.userSpaces` entries with `id`, optional `name`, `passwordHash`, and a nonempty `projectRoots` array. Use the CLI in the guide to generate password hashes and validate roots.
 
 ## Find projects without typing absolute paths
 
