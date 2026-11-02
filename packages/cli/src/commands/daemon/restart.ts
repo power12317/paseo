@@ -8,7 +8,7 @@ import {
 } from "@getpaseo/server/daemon-control";
 import { setTimeout as delay } from "node:timers/promises";
 import type { DaemonGetStatusResponse } from "@getpaseo/protocol/messages";
-import { connectToDaemon } from "../../utils/client.js";
+import { connectToDaemon, resolveDaemonCredential } from "../../utils/client.js";
 import { withOutput, type CommandOptions } from "../../output/index.js";
 import { addJsonAndDaemonHostOptions } from "../../utils/command-options.js";
 import { describeDaemonTarget } from "../../utils/daemon-target.js";
@@ -62,6 +62,7 @@ export async function runRestartCommand(options: CommandOptions, _command: Comma
       "DAEMON_NOT_RUNNING",
       `Daemon is not running for ${target.home}.`,
     );
+  const usesLocalCredential = usesLocalDaemonCredential(target, instance);
   const client = await connectToDaemon({
     target,
     instance: instance ?? undefined,
@@ -126,7 +127,8 @@ export async function runRestartCommand(options: CommandOptions, _command: Comma
       lastError = error;
       const code = (error as { code?: string } | null)?.code;
       if (code === "DAEMON_REPLACED" || code === "DAEMON_NOT_RUNNING") break;
-      if (!isReconnectFailure(error)) throw error;
+      if (!isRestartReconnectFailure(error, usesLocalCredential)) throw error;
+      await checkSupervisor();
     }
     await delay(Math.min(100, remaining()));
   }
@@ -134,6 +136,30 @@ export async function runRestartCommand(options: CommandOptions, _command: Comma
     code: "RESTART_NOT_CONFIRMED",
     message: `Replacement was not confirmed for ${describeDaemonTarget(target)}. Restart acknowledged: ${acknowledged}. Last observation: ${String(lastError)}`,
   };
+}
+
+function usesLocalDaemonCredential(
+  target: CommandOptions["daemonTarget"],
+  instance: Awaited<ReturnType<typeof readDaemonInstance>>,
+): boolean {
+  const listen = instance?.listen;
+  return (
+    target.kind === "instance" &&
+    listen != null &&
+    resolveDaemonCredential(listen, target.home)?.kind === "localCredential"
+  );
+}
+
+function isRestartReconnectFailure(error: unknown, usesLocalCredential: boolean): boolean {
+  // The old worker deletes its credential before closing ingress. A reconnect can
+  // reach it without a token, or race the new worker's token rotation. Only retry
+  // after a successful local connection and restart request; explicit passwords
+  // and the initial connection still report credential errors immediately.
+  const code = (error as { code?: string } | null)?.code;
+  return (
+    isReconnectFailure(error) ||
+    (usesLocalCredential && (code === "AUTH_REQUIRED" || code === "AUTH_FAILED"))
+  );
 }
 
 function isReconnectFailure(error: unknown): boolean {

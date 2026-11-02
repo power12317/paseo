@@ -5,6 +5,8 @@ import path from "node:path";
 import os from "node:os";
 import { pathToFileURL } from "node:url";
 import assert from "node:assert/strict";
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
 
 const prefix = path.resolve(process.argv[2]);
 const packageRoot = path.join(
@@ -41,6 +43,7 @@ await writeFile(
     daemon: {
       listen: "127.0.0.1:0",
       relay: { enabled: false },
+      auth: { password: hashDaemonPassword("smoke-owner") },
       userSpaces: [
         { id: "alice", passwordHash: hashDaemonPassword("smoke-alice"), projectRoots: [aRoot] },
         { id: "bob", passwordHash: hashDaemonPassword("smoke-bob"), projectRoots: [bRoot] },
@@ -53,6 +56,18 @@ config.pluginsEnabled = false;
 config.mcpEnabled = false;
 const daemon = await createPaseoDaemon(config, pino({ level: "silent" }));
 const clients = [];
+const cliEnv = { ...process.env };
+delete cliEnv.PASEO_HOME;
+delete cliEnv.PASEO_HOST;
+delete cliEnv.PASEO_PASSWORD;
+const execFileAsync = promisify(execFile);
+const runCli = (args) =>
+  execFileAsync(path.join(packageRoot, "bin/paseo"), [...args, "--home", home], {
+    env: cliEnv,
+    timeout: 90_000,
+  });
+let daemonStopped = false;
+let managedStarted = false;
 try {
   await daemon.start();
   const address = daemon.getListenTarget();
@@ -92,6 +107,27 @@ try {
     updateTarget,
     "https://github.com/power12317/paseo/releases/latest/download/paseo-latest.tgz",
   );
+  await Promise.all(clients.map((connection) => connection.close()));
+  await daemon.stop();
+  daemonStopped = true;
+  // Exercise the shipped CLI and supervisor, including the credential rotation during restart.
+  // An in-process daemon cannot catch a failure while reconnecting to a replacement worker.
+  managedStarted = true;
+  await runCli(["daemon", "start", "--timeout", "60"]);
+  const before = JSON.parse((await runCli(["daemon", "status", "--json"])).stdout);
+  const restarted = JSON.parse(
+    (await runCli(["daemon", "restart", "--timeout", "60", "--json"])).stdout,
+  );
+  assert.equal(restarted.action, "restarted");
+  assert.equal(restarted.supervisorPid, before.pid);
+  assert.equal(restarted.previousWorkerPid, before.workerPid);
+  assert.notEqual(restarted.workerPid, before.workerPid);
+  const after = JSON.parse((await runCli(["daemon", "status", "--json"])).stdout);
+  assert.equal(after.connectedDaemon, "reachable");
+  assert.equal(after.serverId, before.serverId);
+  assert.equal(after.workerPid, restarted.workerPid);
+  await runCli(["daemon", "stop", "--timeout", "30"]);
+  managedStarted = false;
   console.log(
     JSON.stringify(
       {
@@ -99,6 +135,7 @@ try {
         projects: "separate",
         relativeSearch: "passed",
         nativeTerminal: "passed",
+        localCliRestart: "passed",
         updateTarget,
       },
       null,
@@ -107,6 +144,7 @@ try {
   );
 } finally {
   await Promise.all(clients.map((client) => client.close()));
-  await daemon.stop();
+  if (!daemonStopped) await daemon.stop();
+  if (managedStarted) await runCli(["daemon", "stop", "--force", "--timeout", "15"]);
   await rm(root, { recursive: true, force: true });
 }

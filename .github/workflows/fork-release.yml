@@ -162,6 +162,8 @@ jobs:
           body: |
             Password-selected personal spaces, fixed project roots, and fast relative directory search. Uses the existing Paseo clients.
 
+            Fixes local CLI restart reporting "Password required" while the worker rotates its local credential. Includes a Chinese multi-user CLI guide in docs/multi-user-cli.zh-CN.md.
+
             Install or upgrade:
             `npm install -g https://github.com/power12317/paseo/releases/latest/download/paseo-latest.tgz`
 
